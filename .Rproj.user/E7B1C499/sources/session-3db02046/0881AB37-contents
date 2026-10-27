@@ -1,0 +1,195 @@
+# ============================================================
+# generar_datos.R
+# Genera notas_estudiantes.xlsx con datos FICTICIOS (simulados).
+# Reproducible: semilla fija.
+# ============================================================
+
+# install.packages(c("writexl", "openxlsx", "dplyr", "tidyr"))
+
+library(dplyr)
+library(tidyr)
+library(openxlsx)   # para formato (encabezados, filtros, panel congelado)
+library(writexl)    # respaldo de escritura simple
+
+set.seed(20240501)
+
+# ---- 1. Parámetros del ejemplo -------------------------------------------
+n_estudiantes   <- 100
+secciones       <- c("A", "B", "C", "D")
+asignaturas     <- c("Matemáticas", "Comunicación", "Ciencias",
+                     "Historia", "Inglés")
+periodos        <- c("P1", "P2", "P3")
+evaluaciones    <- c("E1", "E2", "E3")
+pesos           <- c(E1 = 0.30, E2 = 0.30, E3 = 0.40)
+nota_min        <- 0
+nota_max        <- 20
+nota_aprob      <- 11
+prop_faltantes  <- 0.03
+
+stopifnot(abs(sum(pesos) - 1) < 1e-9)
+
+# ---- 2. Hoja estudiantes -------------------------------------------------
+# Nombres ficticios: combinación de nombres y apellidos genéricos.
+nombres_pila <- c("Ana","Luis","María","Pedro","Lucía","Jorge","Elena",
+                  "Diego","Sofía","Carlos","Valeria","Andrés","Camila",
+                  "Mateo","Daniela","Bruno","Paula","Iván","Rosa","Hugo")
+apellidos    <- c("Pérez","Gómez","Rojas","Vega","Torres","Ramírez",
+                  "Flores","Castro","Mendoza","Ríos","Soto","Navarro",
+                  "Chávez","Vargas","Herrera","Campos","Silva","Paredes",
+                  "Ortiz","Salas")
+
+estudiantes <- tibble(
+  id_estudiante = sprintf("EST%03d", 1:n_estudiantes),
+  nombre_ficticio = paste0(
+    sample(nombres_pila, n_estudiantes, replace = TRUE), " ",
+    sample(apellidos,    n_estudiantes, replace = TRUE)
+  ),
+  seccion = sample(secciones, n_estudiantes, replace = TRUE)
+) %>%
+  # garantizar al menos un estudiante por sección
+  mutate(seccion = factor(seccion, levels = secciones)) %>%
+  arrange(id_estudiante) %>%
+  mutate(seccion = as.character(seccion))
+
+stopifnot(!anyDuplicated(estudiantes$id_estudiante))
+
+# ---- 3. Habilidad latente (para notas plausibles) ------------------------
+# Cada estudiante tiene una "habilidad" base y cada asignatura un efecto.
+habilidad <- rnorm(n_estudiantes, mean = 13, sd = 3.2)
+names(habilidad) <- estudiantes$id_estudiante
+
+efecto_asig <- c(Matemáticas = -0.6, Comunicación = 0.8, Ciencias = 0.0,
+                 Historia = 0.4, Inglés = -0.4)
+efecto_per  <- c(P1 = -0.3, P2 = 0.1, P3 = 0.2)  # leve mejora
+
+# ---- 4. Construcción en formato largo ------------------------------------
+grid <- expand_grid(
+  id_estudiante = estudiantes$id_estudiante,
+  asignatura    = asignaturas,
+  periodo       = periodos,
+  evaluacion    = evaluaciones
+) %>%
+  mutate(
+    peso = pesos[evaluacion],
+    # media individual de la celda (estudiante x asignatura x período)
+    media = habilidad[id_estudiante] +
+      efecto_asig[asignatura] +
+      efecto_per[periodo] +
+      rnorm(n(), 0, 0.8),           # ruido por evaluación
+    # nota generada en escala 0-20
+    nota  = round(pmin(pmax(media + rnorm(n(), 0, 1.2), nota_min), nota_max), 1)
+  ) %>%
+  select(id_estudiante, asignatura, periodo, evaluacion, peso, nota)
+
+# ---- 5. Introducir ~3% de faltantes (celdas vacías = NA, no cero) --------
+set.seed(20240502)
+n_total    <- nrow(grid)
+n_falt     <- round(prop_faltantes * n_total)
+idx_falt   <- sample(seq_len(n_total), n_falt)
+grid$nota[idx_falt] <- NA
+
+# Verificar suma de pesos = 1 por (estudiante, asignatura, período)
+chk_pesos <- grid %>%
+  group_by(id_estudiante, asignatura, periodo) %>%
+  summarise(s = sum(peso), .groups = "drop")
+stopifnot(all(abs(chk_pesos$s - 1) < 1e-9))
+
+stopifnot(nrow(grid) == 4500)
+stopifnot(!anyDuplicated(grid[, c("id_estudiante","asignatura",
+                                  "periodo","evaluacion")]))
+
+# ---- 6. Hoja parametros --------------------------------------------------
+parametros <- tibble(
+  parametro = c("nota_minima","nota_maxima","nota_aprobatoria",
+                "politica_faltantes","descripcion"),
+  valor = c(nota_min, nota_max, nota_aprob,
+            "promedio provisional con pesos disponibles",
+            "Datos ficticios para demostración")
+)
+
+# ---- 7. Hoja diccionario -------------------------------------------------
+diccionario <- tibble(
+  hoja = c(rep("estudiantes",3), rep("notas",6),
+           rep("parametros",2), rep("diccionario",5)),
+  variable = c(
+    "id_estudiante","nombre_ficticio","seccion",
+    "id_estudiante","asignatura","periodo","evaluacion","peso","nota",
+    "parametro","valor",
+    "hoja","variable","descripcion","tipo_dato","valores_permitidos"
+  ),
+  descripcion = c(
+    "Identificador único ficticio del estudiante",
+    "Nombre ficticio simulado (no corresponde a persona real)",
+    "Sección del estudiante",
+    "Identificador del estudiante (FK a estudiantes)",
+    "Nombre de la asignatura",
+    "Período académico",
+    "Etiqueta de evaluación dentro del período",
+    "Peso de la evaluación (0-1); suma 1 por estudiante/asignatura/período",
+    "Calificación individual de la evaluación (puede faltar = celda vacía)",
+    "Nombre del parámetro",
+    "Valor del parámetro (texto o número)",
+    "Hoja a la que pertenece la variable",
+    "Nombre de la variable",
+    "Descripción de la variable",
+    "Tipo de dato esperado",
+    "Valores permitidos o rango"
+  ),
+  tipo_dato = c(
+    "texto","texto","texto",
+    "texto","texto","texto","texto","numérico","numérico",
+    "texto","texto",
+    "texto","texto","texto","texto","texto"
+  ),
+  valores_permitidos = c(
+    "EST001..EST100","libre","A, B, C, D",
+    "EST001..EST100","Matemáticas, Comunicación, Ciencias, Historia, Inglés",
+    "P1, P2, P3","E1, E2, E3","0 < peso <= 1","0 <= nota <= 20 o vacío",
+    "nota_minima, nota_maxima, nota_aprobatoria, politica_faltantes, descripcion",
+    "según parámetro",
+    "estudiantes, notas, parametros, diccionario",
+    "texto","texto","texto","texto"
+  )
+)
+
+# ---- 8. Escribir Excel con formato --------------------------------------
+ruta <- "notas_estudiantes.xlsx"
+
+wb <- createWorkbook()
+hs <- createStyle(textDecoration = "bold", fgFill = "#DDEBF7",
+                  border = "bottom", halign = "center")
+
+addWorksheet(wb, "estudiantes")
+writeData(wb, "estudiantes", estudiantes, headerStyle = hs)
+freezePane(wb, "estudiantes", firstRow = TRUE)
+addFilter(wb, "estudiantes", row = 1, col = 1:ncol(estudiantes))
+setColWidths(wb, "estudiantes", cols = 1:ncol(estudiantes), widths = "auto")
+
+addWorksheet(wb, "notas")
+writeData(wb, "notas", grid, headerStyle = hs)
+freezePane(wb, "notas", firstRow = TRUE)
+addFilter(wb, "notas", row = 1, col = 1:ncol(grid))
+setColWidths(wb, "notas", cols = 1:ncol(grid), widths = "auto")
+# formato numérico de nota y peso
+addStyle(wb, "notas",
+         createStyle(numFmt = "0.00"),
+         rows = 2:(nrow(grid)+1), cols = 5:6, gridExpand = TRUE, stack = TRUE)
+
+addWorksheet(wb, "parametros")
+writeData(wb, "parametros", parametros, headerStyle = hs)
+freezePane(wb, "parametros", firstRow = TRUE)
+addFilter(wb, "parametros", row = 1, col = 1:ncol(parametros))
+setColWidths(wb, "parametros", cols = 1:ncol(parametros), widths = "auto")
+
+addWorksheet(wb, "diccionario")
+writeData(wb, "diccionario", diccionario, headerStyle = hs)
+freezePane(wb, "diccionario", firstRow = TRUE)
+addFilter(wb, "diccionario", row = 1, col = 1:ncol(diccionario))
+setColWidths(wb, "diccionario", cols = 1:ncol(diccionario), widths = "auto")
+
+saveWorkbook(wb, ruta, overwrite = TRUE)
+
+cat("Archivo generado:", normalizePath(ruta), "\n")
+cat("Estudiantes:", nrow(estudiantes), "\n")
+cat("Registros de notas:", nrow(grid), "\n")
+cat("Notas faltantes:", sum(is.na(grid$nota)), "\n")
